@@ -196,9 +196,12 @@ withConnectionManager ConnectionManagerArguments {
                           muxPromise
                           (ConnectionTrace connectionId `contramap` tracer)
                           connectionId
-                          (toBearer connectionSnocket
-                                    (WithMuxBearer connectionId `contramap` muxTracer)
-                                    socket))
+                          (\bearerTimeout ->
+                            toBearer
+                              connectionSnocket
+                              bearerTimeout
+                              (WithMuxBearer connectionId `contramap` muxTracer)
+                              socket))
                      `finally` cleanup
                     )
                     (\e -> case rethrowPolicy peerAddr e of

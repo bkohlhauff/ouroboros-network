@@ -40,6 +40,7 @@ module Ouroboros.Network.ConnectionManager.Types
 import           Control.Exception ( Exception
                                    , SomeException )
 import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadTime (DiffTime)
 import           Control.Tracer (Tracer)
 import           Data.Typeable (Typeable)
 
@@ -119,7 +120,7 @@ type ConnectionHandlerFn handlerTrace peerAddr muxPromise m
      = StrictTVar m (Promise muxPromise)
     -> Tracer m handlerTrace
     -> ConnectionId peerAddr
-    -> MuxBearer m
+    -> (DiffTime -> MuxBearer m)
     -> m ()
 
 
