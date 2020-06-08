@@ -83,35 +83,35 @@ sduHandshakeTimeout = 10
 --                     'HandshakeException'
 -- * 'MuxPromiseError' - the multiplexer thrown 'MuxError'.
 --
-data MuxPromise muxMode verionNumber bytes m where
+data MuxPromise muxMode verionNumber bytes m a b where
     MuxRunning
       :: forall muxMode versionNumber bytes m a b.
          !(Mux muxMode m)
-      -> ![MiniProtocol muxMode bytes m a b]
-      -> !(StrictTVar m RunOrStop)
-      -> MuxPromise muxMode versionNumber bytes m
+      -> !(MuxBundle muxMode bytes m a b)
+      -> !(Bundle (StrictTVar m RunOrStop))
+      -> MuxPromise muxMode versionNumber bytes m a b
 
     MuxStopped
-      :: MuxPromise muxMode versionNumber bytes m
+      :: MuxPromise muxMode versionNumber bytes m a b
 
     MuxPromiseHandshakeClientError
      :: HasInitiator muxMode ~ True
      => !(HandshakeException (HandshakeClientProtocolError versionNumber))
-     -> MuxPromise muxMode versionNumber bytes m
+     -> MuxPromise muxMode versionNumber bytes m a b
 
     MuxPromiseHandshakeServerError
       :: HasResponder muxMode ~ True
       => !(HandshakeException (RefuseReason versionNumber))
-      -> MuxPromise muxMode versionNumber bytes m
+      -> MuxPromise muxMode versionNumber bytes m a b
 
     MuxPromiseError
      :: !SomeException
-     -> MuxPromise muxMode versionNumber bytes m
+     -> MuxPromise muxMode versionNumber bytes m a b
 
 
 -- | A predicate which returns 'True' if connection handler thread has stopped running.
 --
-isConnectionHandlerRunning :: MuxPromise muxMode verionNumber bytes m -> Bool
+isConnectionHandlerRunning :: MuxPromise muxMode verionNumber bytes m a b -> Bool
 isConnectionHandlerRunning muxPromise =
     case muxPromise of
       MuxRunning{}                     -> True
@@ -123,17 +123,17 @@ isConnectionHandlerRunning muxPromise =
 
 -- | Type of 'ConnectionHandler' implemented in this module.
 --
-type MuxConnectionHandler muxMode peerAddr versionNumber bytes m =
+type MuxConnectionHandler muxMode peerAddr versionNumber bytes m a b =
     ConnectionHandler muxMode
                       (ConnectionTrace versionNumber)
                       peerAddr
-                      (MuxPromise muxMode versionNumber bytes m)
+                      (MuxPromise muxMode versionNumber bytes m a b)
                       m
 
 -- | Type alias for 'ConnectionManager' using 'MuxPromise'.
 --
-type MuxConnectionManager muxMode socket peerAddr versionNumber bytes m =
-    ConnectionManager muxMode socket peerAddr (MuxPromise muxMode versionNumber bytes m) m
+type MuxConnectionManager muxMode socket peerAddr versionNumber bytes m a b =
+    ConnectionManager muxMode socket peerAddr (MuxPromise muxMode versionNumber bytes m a b) m
 
 -- | To be used as `makeConnectionHandler` field of 'ConnectionManagerArguments'.
 --
@@ -160,8 +160,8 @@ makeConnectionHandler
     -- evidence that we can use mux with it.
     -> MiniProtocolBundle muxMode
     -> HandshakeArguments (ConnectionId peerAddr) versionNumber extra m
-                          (OuroborosApplication muxMode peerAddr ByteString m a b)
-    -> MuxConnectionHandler muxMode peerAddr versionNumber ByteString m
+                          (OuroborosBundle muxMode peerAddr ByteString m a b)
+    -> MuxConnectionHandler muxMode peerAddr versionNumber ByteString m a b
 makeConnectionHandler muxTracer singMuxMode miniProtocolBundle handshakeArguments =
     ConnectionHandler $
       case singMuxMode of
@@ -174,7 +174,7 @@ makeConnectionHandler muxTracer singMuxMode miniProtocolBundle handshakeArgument
       :: HasInitiator muxMode ~ True
       => ConnectionHandlerFn (ConnectionTrace versionNumber)
                              peerAddr
-                             (MuxPromise muxMode versionNumber ByteString m)
+                             (MuxPromise muxMode versionNumber ByteString m a b)
                              m
     outboundConnectionHandler muxPromiseVar tracer connectionId muxBearer =
       exceptionHandling muxPromiseVar tracer $ do
@@ -188,23 +188,36 @@ makeConnectionHandler muxTracer singMuxMode miniProtocolBundle handshakeArgument
             traceWith tracer (ConnectionTraceHandshakeClientError err)
           Right app -> do
             traceWith tracer ConnectionTraceHandshakeSuccess
-            scheduleStopVar <- newTVarM Run
-            let !ptcls = ouroborosProtocols connectionId (readTVar scheduleStopVar) app
+            !scheduleStopVarBundle
+              <- (\a b c -> Bundle (WithHot a) (WithWarm b) (WithEstablished c))
+                  <$> newTVarM Run
+                  <*> newTVarM Run
+                  <*> newTVarM Run
+            let muxApp
+                  = mkMuxApplicationBundle
+                      connectionId
+                      (readTVar <$> scheduleStopVarBundle)
+                      app
             !mux <- newMux miniProtocolBundle
             atomically $ writeTVar muxPromiseVar
                           (Promised
                             (MuxRunning mux
-                                        ptcls
-                                        scheduleStopVar))
+                                        muxApp
+                                        scheduleStopVarBundle))
 
             -- For outbound connections we need to on demand start receivers.
             -- This is, in a sense, a no man land: the server will not act, as
             -- it's only reacting to inbound connections, and it also does not
             -- belong to initiator (peer-2-peer governor).
-            case singMuxMode of
-              SInitiatorResponderMode -> do
+            case (singMuxMode, muxApp) of
+              (SInitiatorResponderMode,
+               Bundle (WithHot hotPtcls)
+                      (WithWarm warmPtcls)
+                      (WithEstablished establishedPtcls)) -> do
                 -- TODO: #2221 restart responders
-                traverse_ (runResponder mux) ptcls
+                traverse_ (runResponder mux) hotPtcls
+                traverse_ (runResponder mux) warmPtcls
+                traverse_ (runResponder mux) establishedPtcls
 
               _ -> pure ()
 
@@ -216,7 +229,7 @@ makeConnectionHandler muxTracer singMuxMode miniProtocolBundle handshakeArgument
       :: HasResponder muxMode ~ True
       => ConnectionHandlerFn (ConnectionTrace versionNumber)
                              peerAddr
-                             (MuxPromise muxMode versionNumber ByteString m)
+                             (MuxPromise muxMode versionNumber ByteString m a b)
                              m
     inboundConnectionHandler muxPromiseVar tracer connectionId muxBearer =
       exceptionHandling muxPromiseVar tracer $ do
@@ -231,10 +244,22 @@ makeConnectionHandler muxTracer singMuxMode miniProtocolBundle handshakeArgument
             traceWith tracer (ConnectionTraceHandshakeServerError err)
           Right app -> do
             traceWith tracer ConnectionTraceHandshakeSuccess
-            scheduleStopVar <- newTVarM Run
-            let !ptcls = ouroborosProtocols connectionId (readTVar scheduleStopVar) app
+            !scheduleStopVarBundle
+              <- (\a b c -> Bundle (WithHot a) (WithWarm b) (WithEstablished c))
+                  <$> newTVarM Run
+                  <*> newTVarM Run
+                  <*> newTVarM Run
+            let muxApp
+                  = mkMuxApplicationBundle
+                      connectionId
+                      (readTVar <$> scheduleStopVarBundle)
+                      app
             !mux <- newMux miniProtocolBundle
-            atomically $ writeTVar muxPromiseVar (Promised (MuxRunning mux ptcls scheduleStopVar))
+            atomically $ writeTVar muxPromiseVar
+                          (Promised
+                            (MuxRunning mux
+                                        muxApp
+                                        scheduleStopVarBundle))
             runMux (WithMuxBearer connectionId `contramap` muxTracer)
                        mux (muxBearer sduTimeout)
 
@@ -244,7 +269,7 @@ makeConnectionHandler muxTracer singMuxMode miniProtocolBundle handshakeArgument
     exceptionHandling :: forall x.
                          StrictTVar m
                            (Promise
-                             (MuxPromise muxMode versionNumber ByteString m))
+                             (MuxPromise muxMode versionNumber ByteString m a b))
                       -> Tracer m (ConnectionTrace versionNumber)
                       -> m x -> m x
     exceptionHandling muxPromiseVar tracer io =

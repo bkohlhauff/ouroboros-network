@@ -48,23 +48,23 @@ import           Ouroboros.Network.Server.RateLimiting
 import           Ouroboros.Network.Snocket
 
 
-data ServerArguments (muxMode :: MuxMode) socket peerAddr versionNumber versionDict bytes m = ServerArguments {
+data ServerArguments (muxMode :: MuxMode) socket peerAddr versionNumber versionDict bytes m a b = ServerArguments {
       serverSocket            :: socket,
       serverSnocket           :: Snocket m socket peerAddr,
       serverTracer            :: Tracer m (ServerTrace peerAddr),
       serverConnectionLimits  :: AcceptedConnectionsLimit,
       serverConnectionManager :: MuxConnectionManager muxMode socket peerAddr
-                                                      versionNumber bytes m
+                                                      versionNumber bytes m a b
     }
 
-run :: forall muxMode socket peerAddr versionNumber versionDict m.
+run :: forall muxMode socket peerAddr versionNumber versionDict m a b.
        ( MonadAsync m
        , MonadCatch m
        , MonadDelay m
        , MonadTime  m
        , Mux.HasResponder muxMode ~ True
        )
-    => ServerArguments muxMode socket peerAddr versionNumber versionDict ByteString m
+    => ServerArguments muxMode socket peerAddr versionNumber versionDict ByteString m a b
     -> m Void
 run ServerArguments {
       serverSocket,
@@ -87,12 +87,13 @@ run ServerArguments {
     -- the 'a' and the list of all other unresolved transations (otherwise we
     -- would leaked memory).  It is implemented in terms of 'Alternative' for
     -- testing purposes.
-    peekSTM :: StrictSeq (STM m a) -> STM m (a, StrictSeq (STM m a))
+    peekSTM :: forall x. StrictSeq (STM m x) -> STM m (x, StrictSeq (STM m x))
     peekSTM = peekAlt
+
 
     monitoring :: TVar m
                    (StrictSeq
-                     (STM m (MuxPromise muxMode verionNumber ByteString m)))
+                     (STM m (MuxPromise muxMode verionNumber ByteString m a b)))
                -> m Void
     monitoring muxVars = do
       muxPromise <- atomically $ do
@@ -101,8 +102,15 @@ run ServerArguments {
         writeTVar muxVars muxs'
         pure muxPromise
       case muxPromise of
-        MuxRunning mux ptcls _scheduleStopVar ->
-          traverse_ (runResponder mux) ptcls
+        MuxRunning mux
+                   (Bundle
+                     (WithHot hotPtls)
+                     (WithWarm warmPtls)
+                     (WithEstablished establishedPtls))
+                 _ -> do
+          traverse_ (runResponder mux) hotPtls
+          traverse_ (runResponder mux) warmPtls
+          traverse_ (runResponder mux) establishedPtls
         _ -> pure ()
       monitoring muxVars
 
@@ -133,7 +141,7 @@ run ServerArguments {
     acceptLoop :: TVar m
                    (StrictSeq
                      (STM m
-                       (MuxPromise muxMode versionNumber ByteString m)))
+                       (MuxPromise muxMode versionNumber ByteString m a b)))
                -> Accept m SomeException peerAddr socket
                -> m Void
     acceptLoop muxVars acceptOne = do
