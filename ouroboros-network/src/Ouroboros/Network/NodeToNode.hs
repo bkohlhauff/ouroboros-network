@@ -215,7 +215,7 @@ defaultMiniProtocolParameters = MiniProtocolParameters {
 --
 nodeToNodeProtocols
   :: MiniProtocolParameters
-  -> (ConnectionId addr -> STM m RunOrStop -> NodeToNodeProtocols appType bytes m a b)
+  -> (ConnectionId addr -> STM m ControlMessage -> NodeToNodeProtocols appType bytes m a b)
   -> OuroborosApplication appType addr bytes m a b
 nodeToNodeProtocols MiniProtocolParameters {
                         chainSyncPipeliningHighMark,
@@ -223,8 +223,8 @@ nodeToNodeProtocols MiniProtocolParameters {
                         txSubmissionMaxUnacked
                       }
                     protocols =
-  OuroborosApplication $ \connectionId shouldStopSTM ->
-    case protocols connectionId shouldStopSTM of
+  OuroborosApplication $ \connectionId controlMessageSTM ->
+    case protocols connectionId controlMessageSTM of
       NodeToNodeProtocols {
           chainSyncProtocol,
           blockFetchProtocol,

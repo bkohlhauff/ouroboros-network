@@ -14,7 +14,7 @@ import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadTime (DiffTime)
 import           Control.Monad.Class.MonadTimer
 
-import           Ouroboros.Network.Mux (RunOrStop (..), ScheduledStop)
+import           Ouroboros.Network.Mux (ControlMessage (..), ControlMessageSTM)
 import           Ouroboros.Network.Protocol.KeepAlive.Client
 import           Ouroboros.Network.Protocol.KeepAlive.Server
 
@@ -27,27 +27,28 @@ keepAliveClient
        ( MonadSTM   m
        , MonadTimer m
        )
-    => ScheduledStop m
+    => ControlMessageSTM m
     -> KeepAliveInterval
     -> KeepAliveClient m ()
-keepAliveClient shouldStopSTM KeepAliveInterval { keepAliveInterval } =
+keepAliveClient controlMessageSTM KeepAliveInterval { keepAliveInterval } =
     SendMsgKeepAlive go
   where
     decisionSTM :: TVar m Bool
-                -> STM  m RunOrStop
+                -> STM  m ControlMessage
     decisionSTM delayVar =
       do
-       readTVar delayVar >>= fmap (const Run) . check
+       readTVar delayVar >>= fmap (const Continue) . check
       `orElse`
-      shouldStopSTM
+      controlMessageSTM
 
     go :: m (KeepAliveClient m ())
     go = do
       delayVar <- registerDelay keepAliveInterval
       decision <- atomically (decisionSTM delayVar)
       case decision of
-        Run  -> pure (SendMsgKeepAlive go)
-        Stop -> pure (SendMsgDone (pure ()))
+        Terminate -> pure (SendMsgDone (pure ()))
+        -- on 'Continue' and 'Quiesce', keep going.
+        _         -> pure (SendMsgKeepAlive go)
 
 
 keepAliveServer

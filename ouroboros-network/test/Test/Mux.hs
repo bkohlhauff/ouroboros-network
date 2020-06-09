@@ -149,7 +149,7 @@ demo chain0 updates delay = do
         activeTracer
         (Mx.toApplication
           (ConnectionId "client" "server")
-          (neverStop (Proxy :: Proxy m))
+          (continueForever (Proxy :: Proxy m))
           consumerApp)
         clientBearer
     serverAsync <- async $
@@ -157,7 +157,7 @@ demo chain0 updates delay = do
         activeTracer
         (Mx.toApplication
           (ConnectionId "server" "client")
-          (neverStop (Proxy :: Proxy m))
+          (continueForever (Proxy :: Proxy m))
           producerApp)
         serverBearer
 

@@ -186,7 +186,7 @@ demo chain0 updates = do
                 activeTracer
                 (toApplication
                   (ConnectionId "producer" "consumer")
-                  (neverStop (Proxy :: Proxy IO))
+                  (continueForever (Proxy :: Proxy IO))
                   producerApp)
                 clientBearer
         _ <- async $
@@ -194,7 +194,7 @@ demo chain0 updates = do
                 activeTracer
                 (toApplication
                   (ConnectionId "consumer" "producer")
-                  (neverStop (Proxy :: Proxy IO))
+                  (continueForever (Proxy :: Proxy IO))
                   consumerApp)
                 serverBearer
 

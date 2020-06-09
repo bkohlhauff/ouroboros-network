@@ -31,10 +31,9 @@ module Ouroboros.Network.Mux
   , runMuxPeer
   , toApplication
   , mkMuxApplicationBundle
-  , ouroborosProtocols
-  , RunOrStop (..)
-  , ScheduledStop
-  , neverStop
+  , ControlMessage (..)
+  , ControlMessageSTM
+  , continueForever
 
     -- * Re-exports
     -- | from "Network.Mux"
@@ -69,25 +68,40 @@ import           Ouroboros.Network.Driver
 import           Ouroboros.Network.Util.ShowProxy (ShowProxy)
 
 
-data RunOrStop = Run | Stop
+-- | Control signal sent to a mini-protocol.  expected to exit, on 'Continue' it
+-- should continue its operation
+--
+data ControlMessage =
+    -- | Continue operation.
+      Continue
+
+    -- | Hold on, e.g. do not sent messages until resumed.  This is not used for
+    -- any hot protocol.
+    --
+    | Quiesce
+
+    -- | The client is expected to terminate as soon as possible.
+    --
+    | Terminate
   deriving (Eq, Show)
 
--- |  'ScheduleStop' should depend on `muxMode` (we only need to shedule stop
--- for intiator side).  This is not done only because this would break tests,
--- bue once the old api is removed it should be possible.
-type ScheduledStop m = STM m RunOrStop
+-- |  'ControlMessageSTM' should depend on `muxMode` (we only need to shedule
+-- stop for intiator side).  This is not done only because this would break
+-- tests, but once the old api is removed it should be possible.
+--
+type ControlMessageSTM m = STM m ControlMessage
 
-neverStop :: Applicative (STM m)
+continueForever :: Applicative (STM m)
           => proxy m
-          -> ScheduledStop m
-neverStop _ = pure Run
+          -> ControlMessageSTM m
+continueForever _ = pure Continue
 
 -- |  Like 'MuxApplication' but using a 'MuxPeer' rather than a raw
 -- @Channel -> m a@ action.
 --
 newtype OuroborosApplication (mode :: MuxMode) addr bytes m a b =
         OuroborosApplication
-          (ConnectionId addr -> STM m RunOrStop -> [MiniProtocol mode bytes m a b])
+          (ConnectionId addr -> ControlMessageSTM m -> [MiniProtocol mode bytes m a b])
 
 
 -- |  There are three kinds of applications: warm, hot and established (ones
@@ -191,7 +205,7 @@ instance Applicative Bundle where
 
 type MuxProtocolBundle (mode :: MuxMode) addr bytes m a b
        = ConnectionId addr
-      -> STM m RunOrStop
+      -> ControlMessageSTM m
       -> [MiniProtocol mode bytes m a b]
 
 type OuroborosBundle (mode :: MuxMode) addr bytes m a b =
@@ -257,46 +271,46 @@ data MuxPeer bytes m a where
 
 toApplication :: (MonadCatch m, MonadAsync m)
               => ConnectionId addr
-              -> ScheduledStop m
+              -> ControlMessageSTM m
               -> OuroborosApplication mode addr LBS.ByteString m a b
               -> Mux.MuxApplication mode m a b
-toApplication connectionId scheduleStop (OuroborosApplication ptcls) =
+toApplication connectionId controlMessageSTM (OuroborosApplication ptcls) =
   Mux.MuxApplication
     [ Mux.MuxMiniProtocol {
         Mux.miniProtocolNum    = miniProtocolNum ptcl,
         Mux.miniProtocolLimits = miniProtocolLimits ptcl,
         Mux.miniProtocolRun    = toMuxRunMiniProtocol (miniProtocolRun ptcl)
       }
-    | ptcl <- ptcls connectionId scheduleStop ]
+    | ptcl <- ptcls connectionId controlMessageSTM ]
 
 
 mkMuxApplicationBundle
     :: forall mode addr bytes m a b.
        ConnectionId addr
-    -> Bundle (ScheduledStop m)
+    -> Bundle (ControlMessageSTM m)
     -> OuroborosBundle mode addr bytes m a b
     -> MuxBundle       mode      bytes m a b
 mkMuxApplicationBundle connectionId
                        (Bundle
-                         hotScheduleStop
-                         warmScheduleStop
-                         establishedScheduleStop)
+                         hotControlMessageSTM
+                         warmControlMessageSTM
+                         establishedControlMessageSTM)
                        (Bundle
                            hotApp
                            warmApp
                            establishedApp) =
     Bundle {
         withHot =
-          mkApplication hotScheduleStop hotApp,
+          mkApplication hotControlMessageSTM hotApp,
 
         withWarm =
-          mkApplication warmScheduleStop warmApp,
+          mkApplication warmControlMessageSTM warmApp,
 
         withEstablished =
-          mkApplication establishedScheduleStop establishedApp
+          mkApplication establishedControlMessageSTM establishedApp
     }
   where
-    mkApplication :: WithProtocolTemperature pt (ScheduledStop m)
+    mkApplication :: WithProtocolTemperature pt (ControlMessageSTM m)
                   -> WithProtocolTemperature pt (MuxProtocolBundle mode addr bytes m a b)
                   -> WithProtocolTemperature pt [MiniProtocol mode bytes m a b]
     mkApplication (WithHot scheduleStop) (WithHot app) =
@@ -320,19 +334,6 @@ toMuxRunMiniProtocol (ResponderProtocolOnly r) =
 toMuxRunMiniProtocol (InitiatorAndResponderProtocol i r) =
   Mux.InitiatorAndResponderProtocol (runMuxPeer i . fromChannel)
                                     (runMuxPeer r . fromChannel)
-
-ouroborosProtocols :: ConnectionId addr
-                   -> ScheduledStop m
-                   -> OuroborosApplication mode addr bytes m a b
-                   -> [MiniProtocol mode bytes m a b]
-ouroborosProtocols connectionId scheduleStop (OuroborosApplication ptcls) =
-    [ MiniProtocol {
-        miniProtocolNum    = miniProtocolNum ptcl,
-        miniProtocolLimits = miniProtocolLimits ptcl,
-        miniProtocolRun    = miniProtocolRun ptcl
-      }
-    | ptcl <- ptcls connectionId scheduleStop ]
-
 
 -- |
 -- Run a @'MuxPeer'@ using either @'runPeer'@ or @'runPipelinedPeer'@.
