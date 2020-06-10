@@ -93,7 +93,7 @@ run ServerArguments {
 
     monitoring :: TVar m
                    (StrictSeq
-                     (STM m (MuxPromise muxMode verionNumber ByteString m a b)))
+                     (STM m (MuxPromise muxMode peerAddr verionNumber ByteString m a b)))
                -> m Void
     monitoring muxVars = do
       muxPromise <- atomically $ do
@@ -102,7 +102,8 @@ run ServerArguments {
         writeTVar muxVars muxs'
         pure muxPromise
       case muxPromise of
-        MuxRunning mux
+        MuxRunning _connectionId
+                   mux
                    (Bundle
                      (WithHot hotPtls)
                      (WithWarm warmPtls)
@@ -141,7 +142,7 @@ run ServerArguments {
     acceptLoop :: TVar m
                    (StrictSeq
                      (STM m
-                       (MuxPromise muxMode versionNumber ByteString m a b)))
+                       (MuxPromise muxMode peerAddr versionNumber ByteString m a b)))
                -> Accept m SomeException peerAddr socket
                -> m Void
     acceptLoop muxVars acceptOne = do
