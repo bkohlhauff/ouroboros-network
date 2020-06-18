@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving  #-}
 
 module Ouroboros.Network.Snocket
   ( -- * Snocket Interface
@@ -158,6 +159,10 @@ newtype LocalAddress = LocalAddress { getFilePath :: FilePath }
 
 -- | We support either sockets or named pipes.
 --
+-- There are three families of addresses: 'SocketFamily' usef for Berkeley
+-- sockets, 'LocalFamily' used for 'LocalAddress'es (either Unix sockets or
+-- Windows named pipe addresses), and 'TestFamily' for testing purposes.
+--
 data AddressFamily addr where
 
     SocketFamily :: !Socket.Family
@@ -165,13 +170,11 @@ data AddressFamily addr where
 
     LocalFamily  :: AddressFamily LocalAddress
 
-instance Eq (AddressFamily addr) where
-    SocketFamily fam0 == SocketFamily fam1 = fam0 == fam1
-    LocalFamily       == LocalFamily       = True
+    TestFamily   :: AddressFamily Int
 
-instance Show (AddressFamily addr) where
-    show (SocketFamily fam) = show fam
-    show LocalFamily        = "LocalFamily"
+deriving instance Eq (AddressFamily addr)
+deriving instance Show (AddressFamily addr)
+
 
 -- | Abstract communication interface that can be used by more than
 -- 'Socket'.  Snockets are polymorphic over monad which is used, this feature
