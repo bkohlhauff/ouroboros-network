@@ -45,6 +45,7 @@ library
                        Ouroboros.Network.ConnectionManager.Core
                        Ouroboros.Network.ConnectionManager.ConnectionHandler
                        Ouroboros.Network.ConnectionManager.Server
+                       Ouroboros.Network.ConnectionManager.Server.ControlChannel
                        Ouroboros.Network.Server.ConnectionTable
                        Ouroboros.Network.Server.Socket
                        Ouroboros.Network.Server.RateLimiting

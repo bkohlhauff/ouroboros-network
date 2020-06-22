@@ -19,12 +19,12 @@ module Test.Ouroboros.Network.ConnectionManager.Server
   ) where
 
 import           Control.Applicative
-import           Control.Monad (MonadPlus, join)
+import           Control.Monad (MonadPlus, join, replicateM)
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadFork  (MonadFork)
 import           Control.Monad.Class.MonadST    (MonadST)
-import           Control.Monad.Class.MonadSTM   (MonadSTM (..))
+import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadTime  (MonadTime)
 import           Control.Monad.Class.MonadTimer
@@ -33,8 +33,10 @@ import           Control.Tracer (Tracer (..), contramap, nullTracer, traceWith)
 import           Codec.Serialise.Class (Serialise)
 import           Data.ByteString.Lazy (ByteString)
 import           Data.Either (partitionEithers)
-import           Data.Foldable (toList)
+import           Data.Foldable (fold, toList)
+import           Data.Functor (($>))
 import           Data.List (mapAccumL)
+import           Data.List.NonEmpty (NonEmpty (..))
 import           Data.Sequence.Strict (StrictSeq)
 import qualified Data.Sequence.Strict as Seq
 import           Data.Typeable (Typeable)
@@ -46,6 +48,7 @@ import           Test.Tasty.QuickCheck (testProperty)
 
 import qualified Network.Mux as Mux
 import qualified Network.Socket as Socket
+import           Network.TypedProtocol.Core
 
 import           Network.TypedProtocol.ReqResp.Type (ReqResp)
 import           Network.TypedProtocol.ReqResp.Codec.CBOR
@@ -57,6 +60,7 @@ import           Ouroboros.Network.Channel (fromChannel)
 import           Ouroboros.Network.ConnectionId
 import           Ouroboros.Network.ConnectionManager.Server (ServerArguments (..))
 import qualified Ouroboros.Network.ConnectionManager.Server as Server
+import qualified Ouroboros.Network.ConnectionManager.Server.ControlChannel as Server
 import           Ouroboros.Network.ConnectionManager.Core
 import           Ouroboros.Network.ConnectionManager.ConnectionHandler
                   ( MuxPromise (..)
@@ -192,15 +196,35 @@ data ClientAndServerData req resp acc = ClientAndServerData {
     -- ^ initial accumulator value for worm responder
     establishedResponderAccumulator :: acc,
     -- ^ initial accumulator value for established responder
-    hotInitiatorRequests            :: [req],
-    -- ^ requests run by the hot intiator
-    warmInitiatorRequests           :: [req],
-    -- ^ requests run by the warm intiator
-    establishedInitiatorRequests    :: [req]
-    -- ^ requests run by the established intiator
+    hotInitiatorRequests            :: [[req]],
+    -- ^ list of requests run by the hot intiator in each round; Running
+    -- multiple rounds allows us to test restarting of responders.
+    warmInitiatorRequests           :: [[req]],
+    -- ^ list of requests run by the warm intiator in each round
+    establishedInitiatorRequests    :: [[req]]
+    -- ^ lsit of requests run by the established intiator in each round
   }
   deriving Show
 
+
+-- Number of rounds to exhoust all the requests.
+--
+numberOfRounds :: ClientAndServerData req resp acc ->  Int
+numberOfRounds ClientAndServerData {
+                  hotInitiatorRequests,
+                  warmInitiatorRequests,
+                  establishedInitiatorRequests
+                } =
+    length hotInitiatorRequests
+    `max`
+    length warmInitiatorRequests
+    `max`
+    length establishedInitiatorRequests
+
+
+arbitraryList :: Arbitrary a =>  Gen [[a]]
+arbitraryList =
+    resize 5 (listOf (resize 10 (listOf (resize 100 arbitrary))))
 
 instance ( Arbitrary req
          , Arbitrary resp
@@ -215,9 +239,9 @@ instance ( Arbitrary req
                           <*> arbitrary
                           <*> arbitrary
                           <*> arbitrary
-                          <*> arbitrary
-                          <*> arbitrary
-                          <*> arbitrary
+                          <*> arbitraryList
+                          <*> arbitraryList
+                          <*> arbitraryList
 
 
 expectedResult :: ClientAndServerData req resp acc
@@ -237,17 +261,17 @@ expectedResult ClientAndServerData { hotInitiatorRequests
       (snd $ mapAccumL
         (applyFun2 responderAccumulatorFn)
         hotResponderAccumulator
-        hotInitiatorRequests))
+        (concat hotInitiatorRequests)))
     (WithWarm
       (snd $ mapAccumL
         (applyFun2 responderAccumulatorFn)
         warmResponderAccumulator
-        warmInitiatorRequests))
+        (concat warmInitiatorRequests)))
     (WithEstablished
       (snd $ mapAccumL
         (applyFun2 responderAccumulatorFn)
         establishedResponderAccumulator
-        establishedInitiatorRequests))
+        (concat establishedInitiatorRequests)))
 
 
 --
@@ -289,7 +313,14 @@ withInitiatorOnlyConnectionManager
         hotInitiatorRequests,
         warmInitiatorRequests,
         establishedInitiatorRequests
-      } =
+      }
+    k = do
+    -- we pass a `StricTVar` with all the reuqests to each initiator.  This way
+    -- the each round (which runs a single instance of `ReqResp` protocol) will
+    -- use its own request list.
+    hotRequestsVar         <- newTVarM hotInitiatorRequests
+    warmRequestsVar        <- newTVarM warmInitiatorRequests
+    establishedRequestsVar <- newTVarM establishedInitiatorRequests
     withConnectionManager
       ConnectionManagerArguments {
           -- ConnectionManagerTrace
@@ -307,14 +338,20 @@ withInitiatorOnlyConnectionManager
                   haHandshakeTracer = (name,) `contramap` nullTracer,
                   haHandshakeCodec = unversionedHandshakeCodec,
                   haVersionDataCodec = cborTermVersionDataCodec,
-                  haVersions = unversionedProtocol clientApplication
-                },
+                  haVersions = unversionedProtocol
+                    (clientApplication
+                      hotRequestsVar
+                      warmRequestsVar
+                      establishedRequestsVar)
+                }
+              (\_ -> pure ()),
           rethrowPolicy = \peerAddr e ->
               case fromException e of
                 Just (_ :: MuxError) -> Nothing
                 Nothing -> Just (ExceptionInHandler peerAddr e),
           connectionSnocket = snocket
         }
+      k
   where
     clientMiniProtocolBundle :: Mux.MiniProtocolBundle InitiatorMode
     clientMiniProtocolBundle = Mux.MiniProtocolBundle
@@ -335,10 +372,16 @@ withInitiatorOnlyConnectionManager
           }
         ]
 
-    clientApplication :: Bundle (ConnectionId peerAddr
-                      -> ControlMessageSTM m
-                      -> [MiniProtocol InitiatorMode ByteString m [resp] Void])
-    clientApplication = Bundle {
+    clientApplication :: StrictTVar m [[req]]
+                      -> StrictTVar m [[req]]
+                      -> StrictTVar m [[req]]
+                      -> Bundle
+                          (ConnectionId peerAddr
+                            -> ControlMessageSTM m
+                            -> [MiniProtocol InitiatorMode ByteString m [resp] Void])
+    clientApplication hotRequestsVar
+                      warmRequestsVar
+                      establishedRequestsVar = Bundle {
         withHot = WithHot $ \_ _ ->
           [ let miniProtocolNum = Mux.MiniProtocolNum 1
             in MiniProtocol {
@@ -347,7 +390,7 @@ withInitiatorOnlyConnectionManager
                 miniProtocolRun =
                   reqRespInitiator
                     miniProtocolNum
-                    hotInitiatorRequests
+                    hotRequestsVar
                }
           ],
         withWarm = WithWarm $ \_ _ ->
@@ -358,7 +401,7 @@ withInitiatorOnlyConnectionManager
                 miniProtocolRun =
                   reqRespInitiator
                     miniProtocolNum
-                    warmInitiatorRequests
+                    warmRequestsVar
               }
           ],
         withEstablished = WithEstablished $ \_ _ ->
@@ -369,21 +412,30 @@ withInitiatorOnlyConnectionManager
                 miniProtocolRun =
                   reqRespInitiator
                     (Mux.MiniProtocolNum 3)
-                    establishedInitiatorRequests
+                    establishedRequestsVar
               }
           ]
       }
 
     reqRespInitiator :: Mux.MiniProtocolNum
-                     -> [req]
+                     -> StrictTVar m [[req]]
                      -> RunMiniProtocol InitiatorMode ByteString m [resp] Void
-    reqRespInitiator protocolNum reqs =
+    reqRespInitiator protocolNum requestsVar =
       InitiatorProtocolOnly
         (MuxPeer
           ((localAddress,"Initiator",protocolNum,) `contramap` nullTracer) -- TraceSendRecv
           codecReqResp
-          (reqRespClientPeer
-            (reqRespClientMap reqs)))
+          (Effect $ do
+            reqs <-
+              atomically $ do
+                requests <- readTVar requestsVar
+                case requests of
+                  (reqs : rest) -> do
+                    writeTVar requestsVar rest $> reqs
+                  [] -> pure []
+            pure $ 
+              reqRespClientPeer
+                (reqRespClientMap reqs)))
 
 
 -- | Runs an example server which runs a single 'ReqResp' protocol for any hot
@@ -430,7 +482,18 @@ withBidirectionalConnectionManager name snocket socket localAddress
                                        warmInitiatorRequests,
                                        establishedInitiatorRequests
                                      }
-                                   k =
+                                   k = do
+    serverControlChannel      <- Server.newControlChannel
+    -- as in the 'withInitiatorOnlyConnectionManager' we use a `StrictTVar` to
+    -- pass list of requests, but since we are also interested in the results we
+    -- need to have multable cells to pass the accumulators around.
+    hotRequestsVar            <- newTVarM hotInitiatorRequests
+    warmRequestsVar           <- newTVarM warmInitiatorRequests
+    establishedRequestsVar    <- newTVarM establishedInitiatorRequests
+    hotAccumulatorVar         <- newTVarM hotResponderAccumulator
+    warmAccumulatorVar        <- newTVarM warmResponderAccumulator
+    establishedAccumulatorVar <- newTVarM establishedResponderAccumulator
+
     withConnectionManager
       ConnectionManagerArguments {
           -- ConnectionManagerTrace
@@ -449,8 +512,16 @@ withBidirectionalConnectionManager name snocket socket localAddress
                   haHandshakeTracer = (name,) `contramap` nullTracer,
                   haHandshakeCodec = unversionedHandshakeCodec,
                   haVersionDataCodec = cborTermVersionDataCodec,
-                  haVersions = unversionedProtocol serverApplication
-                },
+                  haVersions = unversionedProtocol
+                                (serverApplication 
+                                  hotRequestsVar
+                                  warmRequestsVar
+                                  establishedRequestsVar
+                                  hotAccumulatorVar
+                                  warmAccumulatorVar
+                                  establishedAccumulatorVar)
+                }
+              (Server.newOutboundConnection serverControlChannel),
           rethrowPolicy = \peerAddr e ->
               case fromException e of
                 Just (_ :: MuxError) -> Nothing
@@ -462,11 +533,13 @@ withBidirectionalConnectionManager name snocket socket localAddress
             withAsync
               (Server.run
                 ServerArguments {
-                    serverSocket = socket,
+                    serverSockets = socket :| [],
                     serverSnocket = snocket,
                     serverTracer = (name,) `contramap` nullTracer, -- ServerTrace
                     serverConnectionLimits = AcceptedConnectionsLimit maxBound maxBound 0,
-                    serverConnectionManager = connectionManager
+                    serverConnectionManager = connectionManager,
+                    serverControlChannel,
+                    serverRethrowPolicy = \_ -> Server.ShutdownNode
                   }
               )
               (\_ -> k connectionManager serverAddr)
@@ -507,10 +580,23 @@ withBidirectionalConnectionManager name snocket socket localAddress
           }
         ]
 
-    serverApplication :: Bundle (ConnectionId peerAddr
-                      -> ControlMessageSTM m
-                      -> [MiniProtocol InitiatorResponderMode ByteString m [resp] acc])
-    serverApplication = Bundle {
+    serverApplication :: StrictTVar m [[req]]
+                      -> StrictTVar m [[req]]
+                      -> StrictTVar m [[req]]
+                      -> StrictTVar m acc
+                      -> StrictTVar m acc
+                      -> StrictTVar m acc
+                      -> Bundle
+                          (ConnectionId peerAddr
+                            -> ControlMessageSTM m
+                            -> [MiniProtocol InitiatorResponderMode ByteString m [resp] acc])
+    serverApplication hotRequestsVar
+                      warmRequestsVar
+                      establishedRequestsVar
+                      hotAccumulatorVar
+                      warmAccumulatorVar
+                      establishedAccumulatorVar
+                      = Bundle {
         withHot = WithHot $ \_ _ ->
           [ let miniProtocolNum = Mux.MiniProtocolNum 1
             in MiniProtocol {
@@ -520,8 +606,8 @@ withBidirectionalConnectionManager name snocket socket localAddress
                   reqRespInitiatorAndResponder
                     miniProtocolNum
                     responderAccumulatorFn
-                    hotResponderAccumulator
-                    hotInitiatorRequests
+                    hotAccumulatorVar
+                    hotRequestsVar
                }
           ],
         withWarm = WithWarm $ \_ _ ->
@@ -533,8 +619,8 @@ withBidirectionalConnectionManager name snocket socket localAddress
                   reqRespInitiatorAndResponder
                     miniProtocolNum
                     responderAccumulatorFn
-                    warmResponderAccumulator
-                    warmInitiatorRequests
+                    warmAccumulatorVar
+                    warmRequestsVar
               }
           ],
         withEstablished = WithEstablished $ \_ _ ->
@@ -546,8 +632,8 @@ withBidirectionalConnectionManager name snocket socket localAddress
                   reqRespInitiatorAndResponder
                     (Mux.MiniProtocolNum 3)
                     responderAccumulatorFn
-                    establishedResponderAccumulator
-                    establishedInitiatorRequests
+                    establishedAccumulatorVar
+                    establishedRequestsVar
               }
           ]
       }
@@ -555,21 +641,46 @@ withBidirectionalConnectionManager name snocket socket localAddress
     reqRespInitiatorAndResponder
       :: Mux.MiniProtocolNum
       -> Fun (acc, req) (acc, resp)
-      -> acc
-      -> [req]
+      -> StrictTVar m acc
+      -> StrictTVar m [[req]]
       -> RunMiniProtocol InitiatorResponderMode ByteString m [resp] acc
-    reqRespInitiatorAndResponder protocolNum fn acc reqs =
+    reqRespInitiatorAndResponder protocolNum fn accumulatorVar requestsVar =
       InitiatorAndResponderProtocol
         (MuxPeer
           ((localAddress,"Initiator",protocolNum,) `contramap` nullTracer) -- TraceSendRecv
           codecReqResp
-          (reqRespClientPeer
-            (reqRespClientMap reqs)))
+          (Effect $ do
+            reqs <-
+              atomically $ do
+                requests <- readTVar requestsVar
+                case requests of
+                  (reqs : rest) -> do
+                    writeTVar requestsVar rest $> reqs
+                  [] -> pure []
+            pure $ 
+              reqRespClientPeer
+                (reqRespClientMap reqs)))
         (MuxPeer
           ((localAddress,"Responder",protocolNum,) `contramap` nullTracer) -- TraceSendRecv
           codecReqResp
-          (reqRespServerPeer
-            (reqRespServerMapAccumL (\as b -> pure (applyFun2 fn as b)) acc)))
+          (Effect $ reqRespServerPeer <$> reqRespServerMapAccumL' accumulatorVar (applyFun2 fn)))
+
+    reqRespServerMapAccumL' :: StrictTVar m acc
+                            -> (acc -> req -> (acc, resp))
+                            -> m (ReqRespServer req resp m acc)
+    reqRespServerMapAccumL' accumulatorVar fn = do
+        acc <- atomically (readTVar accumulatorVar)
+        pure $ go acc
+      where
+        go acc =
+          ReqRespServer {
+              recvMsgReq = \req -> case fn acc req of
+                (acc', resp) -> pure (resp, go acc'),
+              recvMsgDone = do
+                atomically $ writeTVar accumulatorVar acc
+                pure acc
+            }
+
 
 
 
@@ -661,7 +772,8 @@ unidirectionalExperiment snocket socket clientAndServerData = do
             case muxPromise of
                 MuxRunning _ mux muxBundle _ -> do
                     ( resp0 :: Bundle [[resp]]) <-
-                      runInitiatorProtocols SInitiatorMode mux muxBundle
+                      fold <$> replicateM (numberOfRounds clientAndServerData)
+                                          (runInitiatorProtocols SInitiatorMode mux muxBundle)
                     pure $
                       (concat <$> resp0) === expectedResult
                                               clientAndServerData
@@ -728,8 +840,8 @@ bidirectionalExperiment
               -- node 1 → node 0: reuse existing connection
               muxPromise1 <- includeOutboundConnection connectionManager1 localAddr0 >>= atomically
               case (muxPromise0, muxPromise1) of
-                  ( MuxRunning connId0 mux0 muxBundle0 _, MuxRunning connId1 mux1 muxBundle1 _)
-                    -> do
+                  ( MuxRunning connId0 mux0 muxBundle0 _
+                    , MuxRunning connId1 mux1 muxBundle1 _) -> do
                       -- runInitiatorProtcols returns a list of results per each
                       -- protocol in each bucket (warm \/ hot \/ established); but
                       -- we run only one mini-protocol. We can use `concat` to
@@ -737,9 +849,13 @@ bidirectionalExperiment
                       ( resp0 :: Bundle [[resp]]
                         , resp1 :: Bundle [[resp]]
                         ) <-
-                        runInitiatorProtocols SInitiatorResponderMode mux0 muxBundle0
+                        -- Run initiator twice; this tests if the responders on
+                        -- the other end are restarted.
+                        (fold <$> replicateM (numberOfRounds clientAndServerData0)
+                                     (runInitiatorProtocols SInitiatorResponderMode mux0 muxBundle0))
                         `concurrently`
-                        runInitiatorProtocols SInitiatorResponderMode mux1 muxBundle1
+                        (fold <$> replicateM (numberOfRounds clientAndServerData1)
+                                     (runInitiatorProtocols SInitiatorResponderMode mux1 muxBundle1))
                       pure $
                         counterexample "0"
                           ((concat <$> resp0) === expectedResult clientAndServerData0
@@ -828,11 +944,9 @@ cmTracer =
     Tracer
       $ \msg ->
         case msg of
-          {--
-            - (_, ErrorFromHandler{})
-            -   -> -- this way 'debugTracer' does not trigger a warning :)
-            -     traceWith debugTracer msg
-            --}
+          (_, ErrorFromHandler{})
+            -> -- this way 'debugTracer' does not trigger a warning :)
+              traceWith debugTracer msg
           (_, RethrownErrorFromHandler{})
             -> traceWith debugTracer msg
           _ -> pure ()
