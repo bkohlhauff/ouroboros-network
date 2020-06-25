@@ -24,9 +24,11 @@ module Test.Consensus.HardFork.Infra (
     -- * Era-specified generators
   , genEraParams
   , genStartOfNextEra
+  , genShape
   ) where
 
 import           Control.Monad.Except
+import           Data.Maybe (fromMaybe)
 import           Data.SOP.Dict (Dict (..))
 import           Data.SOP.Strict
 import           Data.Word
@@ -160,3 +162,17 @@ genStartOfNextEra startOfEra HF.EraParams{..} =
        HF.LowerBound e    -> (\n -> Just $ HF.addEpochs n e         ) <$> choose (0, 10)
        HF.NoLowerBound    -> (\n -> Just $ HF.addEpochs n startOfEra) <$> choose (1, 10)
        HF.UnsafeUnbounded -> return Nothing
+
+genShape :: Eras xs -> Gen (HF.Shape xs)
+genShape eras = HF.Shape <$> erasMapStateM genParams eras (EpochNo 0)
+  where
+    genParams :: Era -> EpochNo -> Gen (HF.EraParams, EpochNo)
+    genParams _era startOfThis = do
+        params      <- genEraParams      startOfThis
+        startOfNext <- genStartOfNextEra startOfThis params
+        -- If startOfNext is 'Nothing', we used 'UnsafeUnbounded' for this
+        -- era. This means we should not be generating any events for any
+        -- succeeding eras, but to determine the /shape/ of the eras, and
+        -- set subsequent lower bounds, we just need to make sure that we
+        -- generate a valid shape: the next era must start after this one.
+        return (params, fromMaybe (succ startOfThis) startOfNext)

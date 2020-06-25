@@ -26,21 +26,19 @@ import           Test.Util.Orphans.Arbitrary ()
 import           Test.Consensus.HardFork.Infra
 
 tests :: TestTree
-tests = testGroup "HardForkHistory" [
-      testGroup "Summary" [
-          testGroup "Sanity" [
-              testProperty "generator" $ checkGenerator $ \ArbitrarySummary{..} ->
-                checkInvariant HF.invariantSummary arbitrarySummary
-            , testProperty "shrinker"  $ checkShrinker $ \ArbitrarySummary{..} ->
-                checkInvariant HF.invariantSummary arbitrarySummary
-            ]
-        , testGroup "Conversions" [
-              testProperty "roundtripWallclockSlot" roundtripWallclockSlot
-            , testProperty "roundtripSlotWallclock" roundtripSlotWallclock
-            , testProperty "roundtripSlotEpoch"     roundtripSlotEpoch
-            , testProperty "roundtripEpochSlot"     roundtripEpochSlot
-            , testProperty "reportsPastHorizon"     reportsPastHorizon
-            ]
+tests = testGroup "Summary" [
+      testGroup "Sanity" [
+          testProperty "generator" $ checkGenerator $ \ArbitrarySummary{..} ->
+            checkInvariant HF.invariantSummary arbitrarySummary
+        , testProperty "shrinker"  $ checkShrinker $ \ArbitrarySummary{..} ->
+            checkInvariant HF.invariantSummary arbitrarySummary
+        ]
+    , testGroup "Conversions" [
+          testProperty "roundtripWallclockSlot" roundtripWallclockSlot
+        , testProperty "roundtripSlotWallclock" roundtripSlotWallclock
+        , testProperty "roundtripSlotEpoch"     roundtripSlotEpoch
+        , testProperty "roundtripEpochSlot"     roundtripEpochSlot
+        , testProperty "reportsPastHorizon"     reportsPastHorizon
         ]
     ]
 

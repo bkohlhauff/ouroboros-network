@@ -330,13 +330,14 @@ test-suite test-consensus
   main-is:             Main.hs
   other-modules:
                        Test.Consensus.BlockchainTime.Simple
-                       Test.Consensus.HardFork.History
-                       Test.Consensus.HardFork.Infra
-                       Test.Consensus.HardFork.Summary
                        Test.Consensus.HardFork.Combinator
                        Test.Consensus.HardFork.Combinator.A
                        Test.Consensus.HardFork.Combinator.B
                        Test.Consensus.HardFork.Combinator.Common
+                       Test.Consensus.HardFork.Forecast
+                       Test.Consensus.HardFork.History
+                       Test.Consensus.HardFork.Infra
+                       Test.Consensus.HardFork.Summary
                        Test.Consensus.MiniProtocol.ChainSync.Client
                        Test.Consensus.MiniProtocol.LocalStateQuery.Server
                        Test.Consensus.Mempool

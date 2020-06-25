@@ -6,6 +6,7 @@ import qualified Test.Consensus.BlockchainTime.Simple (tests)
 import qualified Test.Consensus.HardFork.Combinator (tests)
 import qualified Test.Consensus.HardFork.History (tests)
 import qualified Test.Consensus.HardFork.Summary (tests)
+import qualified Test.Consensus.HardFork.Forecast (tests)
 import qualified Test.Consensus.Mempool (tests)
 import qualified Test.Consensus.MiniProtocol.ChainSync.Client (tests)
 import qualified Test.Consensus.MiniProtocol.LocalStateQuery.Server (tests)
@@ -30,7 +31,14 @@ tests =
   , Test.Consensus.ResourceRegistry.tests
   , Test.Consensus.Util.MonadSTM.RAWLock.tests
   , Test.Consensus.Util.Versioned.tests
-  , Test.Consensus.HardFork.Summary.tests
-  , Test.Consensus.HardFork.History.tests
-  , Test.Consensus.HardFork.Combinator.tests
+  , testGroup "HardFork" [
+        testGroup "History" [
+            Test.Consensus.HardFork.Summary.tests
+          , Test.Consensus.HardFork.History.tests
+          ]
+      , testGroup "Combinator" [
+            Test.Consensus.HardFork.Forecast.tests
+          , Test.Consensus.HardFork.Combinator.tests
+          ]
+      ]
   ]
