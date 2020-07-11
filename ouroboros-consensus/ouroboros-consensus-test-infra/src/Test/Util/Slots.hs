@@ -3,6 +3,7 @@
 
 module Test.Util.Slots (
   NumSlots (..),
+  maxNumSlots,
   ) where
 
 import           Data.Word (Word64)
@@ -22,8 +23,11 @@ newtype NumSlots = NumSlots {unNumSlots :: Word64}
 
 -- TODO: We shouldn't really pick the number of slots independent from k
 instance Arbitrary NumSlots where
-  arbitrary = NumSlots <$> QC.choose (minNumSlots, 100)
+  arbitrary = NumSlots <$> QC.choose (minNumSlots, maxNumSlots)
   shrink (NumSlots n) = NumSlots <$> (filter (>= minNumSlots) $ shrink n)
 
 minNumSlots :: Word64
 minNumSlots = 1
+
+maxNumSlots :: Word64
+maxNumSlots = 100
