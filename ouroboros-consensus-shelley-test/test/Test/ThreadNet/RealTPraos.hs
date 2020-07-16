@@ -98,15 +98,15 @@ prop_simple_real_tpraos_convergence TestSetup
   , setupVersion
   } =
     prop_general PropGeneralArgs
-      { pgaBlockProperty      = const $ property True
-      , pgaCountTxs           = fromIntegral . length . extractTxs
-      , pgaExpectedCannotLead = noExpectedCannotLeads
-      , pgaFirstBlockNo       = 0
-      , pgaFixedMaxForkLength = Nothing
-      , pgaFixedSchedule      = Nothing
-      , pgaSecurityParam      = setupK
-      , pgaTestConfig         = setupTestConfig
-      , pgaTestConfigB        = testConfigB
+      { pgaBlockProperty       = const $ property True
+      , pgaCountTxs            = fromIntegral . length . extractTxs
+      , pgaExpectedCannotForge = noExpectedCannotForges
+      , pgaFirstBlockNo        = 0
+      , pgaFixedMaxForkLength  = Nothing
+      , pgaFixedSchedule       = Nothing
+      , pgaSecurityParam       = setupK
+      , pgaTestConfig          = setupTestConfig
+      , pgaTestConfigB         = testConfigB
       }
       testOutput
   where
