@@ -33,10 +33,10 @@ set -euo pipefail
 # overhead and also more reliable percentages in their QuickCheck statistics.
 rows=(
     # From the slowest individual invocation ...
-    '1 RealTPraos 1000'
-    '1 Cardano    5000'
-    '5 RealTPraos 100'
-    '5 Cardano    500'
+    '1 RealTPraos 1'
+    '1 Cardano    1'
+    '2 RealTPraos 1'
+    '2 Cardano    1'
     # ... to fastest individual invocation
     #
     # And the number of invocations is non-decreasing.
