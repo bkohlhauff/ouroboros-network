@@ -152,8 +152,12 @@ export LOCALE_ARCHIVE="${nixAbsDir}/glibcLocales"/lib/locale/locale-archive
 # saturated.
 nix build -f "$nixdir" nightly-checks.gnuparallel -o "${nixAbsDir}/parallel"
 
+echo Before --citation
+
 # Appeasement
-"${nixAbsDir}/parallel/bin/parallel" --citation 1>/dev/null 2>&1 || true
+echo 'will cite' | "${nixAbsDir}/parallel/bin/parallel" --citation || true
+
+echo After --citation
 
 # Build/fetch the exes that run the ThreadNet tests
 for suite in $suites; do
