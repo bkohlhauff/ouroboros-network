@@ -22,6 +22,7 @@ import           Ouroboros.Consensus.Config
 import           Ouroboros.Consensus.Ledger.Abstract
 import           Ouroboros.Consensus.Ledger.SupportsMempool
 
+import qualified Shelley.Spec.Ledger.BaseTypes as SL
 import qualified Shelley.Spec.Ledger.LedgerState as SL
 import qualified Shelley.Spec.Ledger.STS.Ledger as STS
 import qualified Shelley.Spec.Ledger.Tx as SL
@@ -43,9 +44,11 @@ import           Test.ThreadNet.Infra.Shelley
 
 data ShelleyTxGenExtra h = ShelleyTxGenExtra
   { -- | Generator environment.
-    stgeGenEnv  :: Gen.GenEnv h
+    stgeGenEnv          :: Gen.GenEnv h
     -- | Generate no transactions before this slot.
-  , stgeStartAt :: SlotNo
+  , stgeStartAt         :: SlotNo
+    -- | Whether to generate random parameter updates
+  , stgeGenerateUpdates :: Bool
   }
 
 instance HashAlgorithm h => TxGen (ShelleyBlock (TPraosMockCrypto h)) where
@@ -59,8 +62,9 @@ instance HashAlgorithm h => TxGen (ShelleyBlock (TPraosMockCrypto h)) where
       go [] n $ applyChainTick (configLedger cfg) curSlotNo lst
     where
       ShelleyTxGenExtra
-        { stgeGenEnv  = genEnv
-        , stgeStartAt = startSlot
+        { stgeGenEnv          = genEnv
+        , stgeGenerateUpdates = inclPPUs
+        , stgeStartAt         = startSlot
         } = extra
 
       go :: [GenTx (ShelleyBlock (TPraosMockCrypto h))]  -- ^ Accumulator
@@ -69,7 +73,7 @@ instance HashAlgorithm h => TxGen (ShelleyBlock (TPraosMockCrypto h)) where
          -> Gen [GenTx (ShelleyBlock (TPraosMockCrypto h))]
       go acc 0 _  = return (reverse acc)
       go acc n st = do
-        tx <- genTx cfg curSlotNo st genEnv
+        tx <- genTx cfg inclPPUs curSlotNo st genEnv
         case runExcept $ applyTx (configLedger cfg) curSlotNo tx st of
           -- We don't mind generating invalid transactions
           Left  _   -> go (tx:acc) (n - 1) st
@@ -78,11 +82,12 @@ instance HashAlgorithm h => TxGen (ShelleyBlock (TPraosMockCrypto h)) where
 genTx
   :: forall h. HashAlgorithm h
   => TopLevelConfig (ShelleyBlock (TPraosMockCrypto h))
+  -> Bool   -- ^ whether to generate update proposals
   -> SlotNo
   -> TickedLedgerState (ShelleyBlock (TPraosMockCrypto h))
   -> Gen.GenEnv h
   -> Gen (GenTx (ShelleyBlock (TPraosMockCrypto h)))
-genTx _cfg slotNo TickedShelleyLedgerState { tickedShelleyState } genEnv =
+genTx _cfg inclPPUs slotNo TickedShelleyLedgerState { tickedShelleyState } genEnv =
     mkShelleyTx <$> Gen.genTx
       genEnv
       ledgerEnv
@@ -95,7 +100,8 @@ genTx _cfg slotNo TickedShelleyLedgerState { tickedShelleyState } genEnv =
     -- node to another, and we must have the relevant nodes brought online at
     -- that point.
     isSimpleTx (SL._body -> txb) =
-      (Seq.null $ SL._certs txb)
+      (Seq.null $ SL._certs txb) &&
+      (inclPPUs || SL.SNothing == SL._txUpdate txb)
 
     epochState :: CSL.EpochState h
     epochState = SL.nesEs tickedShelleyState
